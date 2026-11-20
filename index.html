@@ -342,8 +342,7 @@ class Session {
     const stream = new MediaStream();
     pc.ontrack = e => {
       stream.addTrack(e.track);
-      try { e.receiver.jitterBufferTarget = prefs.latency; } catch {}
-      try { e.receiver.playoutDelayHint = prefs.latency / 1000; } catch {}
+      applyBuffer(e.receiver);
       const v = $('video'); if (v.srcObject !== stream) v.srcObject = stream;
     };
     pc.onicecandidate = e => { if (e.candidate) this.send({ t: 'ice', c: e.candidate.toJSON() }); };
@@ -466,6 +465,16 @@ class Session {
   }
 }
 
+// Video gets the chosen (minimal) buffer. Audio is a separate stream (not lip-synced, so it never delays
+// video) and keeps a small cushion: with a 0 ms target any burst of a heavy 4K frame on the network
+// starves the audio decoder and you hear clicks.
+const AUDIO_BUFFER = { 0: 80, 80: 120, 250: 250 };
+function applyBuffer(r) {
+  const ms = r.track && r.track.kind === 'audio' ? (AUDIO_BUFFER[prefs.latency] || 120) : prefs.latency;
+  try { r.jitterBufferTarget = ms; } catch {}
+  try { r.playoutDelayHint = ms / 1000; } catch {}
+}
+
 function videoCaps() {
   const c = (window.RTCRtpReceiver && RTCRtpReceiver.getCapabilities && RTCRtpReceiver.getCapabilities('video')) || { codecs: [] };
   const has = mt => c.codecs.some(x => x.mimeType.toLowerCase() === mt);
@@ -565,7 +574,7 @@ function segInit(id, cur, cb) {
 const latNotes = { '0': 'Минимальная задержка: кадры показываются сразу, как пришли.', '80': 'Небольшой буфер сглаживает неровную сеть.', '250': 'Максимально плавно на плохой сети, задержка выше.' };
 segInit('segLat', prefs.latency, v => {
   prefs.latency = +v; savePrefs(); $('latNote').textContent = latNotes[v];
-  if (S && S.pc) S.pc.getReceivers().forEach(r => { try { r.jitterBufferTarget = prefs.latency; } catch {} try { r.playoutDelayHint = prefs.latency / 1000; } catch {} });
+  if (S && S.pc) S.pc.getReceivers().forEach(applyBuffer);
 });
 $('latNote').textContent = latNotes[String(prefs.latency)] || latNotes['0'];
 function applyFit() { player.classList.toggle('fill', prefs.fit === 'fill'); player.classList.toggle('native', prefs.fit === 'native'); }
