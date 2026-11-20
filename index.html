@@ -467,8 +467,9 @@ class Session {
 
 // Video gets the chosen (minimal) buffer. Audio is a separate stream (not lip-synced, so it never delays
 // video) and keeps a small cushion: with a 0 ms target any burst of a heavy 4K frame on the network
-// starves the audio decoder and you hear clicks.
-const AUDIO_BUFFER = { 0: 80, 80: 120, 250: 250 };
+// starves the audio decoder and you hear clicks; a steadier buffer also means fewer time-stretch
+// adjustments (WebRTC speeds up / slows down audio to resize its buffer — audible on music/game sound).
+const AUDIO_BUFFER = { 0: 120, 80: 150, 250: 250 };
 function applyBuffer(r) {
   const ms = r.track && r.track.kind === 'audio' ? (AUDIO_BUFFER[prefs.latency] || 120) : prefs.latency;
   try { r.jitterBufferTarget = ms; } catch {}
