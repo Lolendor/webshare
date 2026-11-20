@@ -112,6 +112,7 @@ input[type=range]{accent-color:var(--accent);width:110px}
 
   <div class="bar top">
     <div class="title"><b id="srcName">Трансляция</b><span><i id="cdot" class="dot warn"></i><span id="cstate">подключение</span></span></div>
+    <span id="pHq" class="pill hidden" title="Хост в режиме максимального качества: буфер ~1.5 с, без пропусков кадров">Кино</span>
     <span id="pHdr" class="pill hidden" style="background:linear-gradient(135deg,#ff9500,#ff2d55)">HDR</span>
     <span id="pRes" class="pill hide-s"></span>
     <span id="pLat" class="pill"></span>
@@ -123,7 +124,7 @@ input[type=range]{accent-color:var(--accent);width:110px}
   <div id="panel" class="panel hidden">
     <h3>Задержка</h3>
     <div class="seg" id="segLat">
-      <button data-v="0">Мин.</button><button data-v="80">Баланс</button><button data-v="250">Плавно</button>
+      <button data-v="0">Мин.</button><button data-v="80">Баланс</button><button data-v="250">Плавно</button><button data-v="1500">Кино</button>
     </div>
     <p class="note" id="latNote">Минимальная задержка: кадры показываются сразу, как пришли.</p>
     <h3>Масштаб</h3>
@@ -136,6 +137,7 @@ input[type=range]{accent-color:var(--accent);width:110px}
       <div class="row"><span>Кадры/с</span><select id="qFps"><option>30</option><option>60</option><option>120</option></select></div>
       <div class="row"><span>Битрейт</span><select id="qBr"><option value="0">Авто</option><option value="5">5 Мбит/с</option><option value="10">10 Мбит/с</option><option value="20">20 Мбит/с</option><option value="35">35 Мбит/с</option><option value="50">50 Мбит/с</option><option value="80">80 Мбит/с</option></select></div>
       <div class="row"><span>Диапазон</span><select id="qRange"><option value="sdr">SDR</option><option value="hdr10">HDR10 (HEVC)</option><option value="tonemap">HDR → SDR</option></select></div>
+      <div class="row"><span>Макс. качество<br><small style="color:#9aa0a6">плавно, задержка ~1.5 с</small></span><input type="checkbox" id="qSmooth" style="width:20px;height:20px;accent-color:var(--accent)"></div>
       <div class="row"><span>Кодек</span><select id="qCodec"><option value="h264">H.264</option><option value="h265">HEVC (H.265)</option></select></div>
       <button class="apply" id="qApply">Применить</button>
       <p class="note">Настройки меняются для всех зрителей этой трансляции.</p>
@@ -367,7 +369,7 @@ class Session {
   onCtl(m) {
     switch (m.t) {
       case 'hello': this.allowControl = !!m.allowControl; updateCtlBox(); break;
-      case 'info': this.info = m.info; if ('allowControl' in m) this.allowControl = !!m.allowControl; applyInfo(m.info); updateCtlBox(); break;
+      case 'info': this.info = m.info; if ('allowControl' in m) this.allowControl = !!m.allowControl; applyInfo(m.info); updateCtlBox(); if (this.pc) this.pc.getReceivers().forEach(applyBuffer); break;
       case 'pong': this.appRtt = performance.now() - m.ts; break;
       case 'denied_control': toast('Хост не разрешил менять качество'); break;
       case 'kicked': this.fail('Хост отключил вас от трансляции'); break;
@@ -470,8 +472,13 @@ class Session {
 // starves the audio decoder and you hear clicks; a steadier buffer also means fewer time-stretch
 // adjustments (WebRTC speeds up / slows down audio to resize its buffer — audible on music/game sound).
 const AUDIO_BUFFER = { 0: 120, 80: 150, 250: 250 };
+const CINEMA_MS = 1500;
+// Host in "max quality" mode → at least the cinema buffer (late/retransmitted packets still make it).
+const effectiveLatency = () => (S && S.info && S.info.smooth) ? Math.max(prefs.latency, CINEMA_MS) : prefs.latency;
 function applyBuffer(r) {
-  const ms = r.track && r.track.kind === 'audio' ? (AUDIO_BUFFER[prefs.latency] || 120) : prefs.latency;
+  const lat = effectiveLatency();
+  // ≥1 s: one buffer for both tracks (they are lip-synced then); below: audio keeps its own small cushion.
+  const ms = lat >= 1000 ? lat : (r.track && r.track.kind === 'audio' ? (AUDIO_BUFFER[lat] || 120) : lat);
   try { r.jitterBufferTarget = ms; } catch {}
   try { r.playoutDelayHint = ms / 1000; } catch {}
 }
@@ -549,6 +556,8 @@ function applyInfo(info) {
   if (![...$('qBr').options].some(o => o.selected)) $('qBr').value = '0';
   if (info.codec) $('qCodec').value = info.codec;
   $('qRange').value = info.hdr ? 'hdr10' : info.tonemap ? 'tonemap' : 'sdr';
+  $('qSmooth').checked = !!info.smooth;
+  $('pHq').classList.toggle('hidden', !info.smooth);
   $('pHdr').classList.toggle('hidden', !info.hdr);
   $('pHdr').title = info.hdr ? (videoCaps().hdrScreen ? 'HDR10: BT.2020 PQ' : 'HDR10 — этот экран не HDR, браузер покажет SDR-версию') : '';
 }
@@ -561,7 +570,7 @@ function updateCtlBox() {
 $('qApply').onclick = () => {
   if (!S) return;
   const range = $('qRange').value;
-  const settings = { res: $('qRes').value, fps: +$('qFps').value, mbps: +$('qBr').value, codec: range === 'hdr10' ? 'h265' : $('qCodec').value, range };
+  const settings = { res: $('qRes').value, fps: +$('qFps').value, mbps: +$('qBr').value, codec: range === 'hdr10' ? 'h265' : $('qCodec').value, range, smooth: $('qSmooth').checked };
   S.ctl({ t: 'req', settings }); toast('Запрос отправлен хосту');
 };
 
@@ -572,7 +581,7 @@ function segInit(id, cur, cb) {
   mark(cur);
   seg.onclick = e => { const b = e.target.closest('button'); if (!b) return; mark(b.dataset.v); cb(b.dataset.v); };
 }
-const latNotes = { '0': 'Минимальная задержка: кадры показываются сразу, как пришли.', '80': 'Небольшой буфер сглаживает неровную сеть.', '250': 'Максимально плавно на плохой сети, задержка выше.' };
+const latNotes = { '0': 'Минимальная задержка: кадры показываются сразу, как пришли.', '80': 'Небольшой буфер сглаживает неровную сеть.', '250': 'Плавнее на плохой сети, задержка выше.', '1500': 'Кино: буфер ~1.5 с — ни одного пропущенного кадра даже на нестабильной сети, звук синхронизирован с картинкой.' };
 segInit('segLat', prefs.latency, v => {
   prefs.latency = +v; savePrefs(); $('latNote').textContent = latNotes[v];
   if (S && S.pc) S.pc.getReceivers().forEach(applyBuffer);
